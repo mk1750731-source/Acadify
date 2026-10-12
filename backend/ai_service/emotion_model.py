@@ -1,35 +1,34 @@
 """
-EmotionModel — facial expression detection using DeepFace.
-`ready` is a live property — re-checks warmup state on every call.
+EmotionModel — facial expression detection using the fer library.
+No TensorFlow. Works within Railway 512MB RAM.
 """
 import threading
-from deepface import DeepFace
 
+_detector = None
+_ready = False
 _lock = threading.Lock()
-_warmed_up = False
 
 
-def _warmup():
-    global _warmed_up
-    if _warmed_up:
+def _load():
+    global _detector, _ready
+    if _ready:
         return True
     with _lock:
-        if _warmed_up:
+        if _ready:
             return True
         try:
-            import numpy as np
-            dummy = np.zeros((48, 48, 3), dtype="uint8")
-            DeepFace.analyze(img_path=dummy, actions=["emotion"], enforce_detection=False, silent=True)
-            _warmed_up = True
-            print("[EmotionModel] ready.")
+            from fer import FER
+            _detector = FER(mtcnn=False)  # mtcnn=False uses OpenCV cascade — faster, no extra deps
+            _ready = True
+            print("[EmotionModel] fer ready.")
             return True
         except Exception as e:
-            print(f"[EmotionModel] warmup error: {e}")
+            print(f"[EmotionModel] load error: {e}")
             return False
 
 
 def warmup_async():
-    threading.Thread(target=_warmup, daemon=True).start()
+    threading.Thread(target=_load, daemon=True).start()
 
 
 class EmotionModel:
@@ -38,7 +37,7 @@ class EmotionModel:
 
     @property
     def ready(self):
-        return _warmed_up or _warmup()
+        return _ready or _load()
 
     def predict(self, face_bgr_or_gray):
         if not self.ready:
@@ -48,19 +47,32 @@ class EmotionModel:
             img = face_bgr_or_gray
             if len(img.shape) == 2:
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            result = DeepFace.analyze(img_path=img, actions=["emotion"], enforce_detection=False, silent=True)
+            # fer expects BGR
+            result = _detector.detect_emotions(img)
             if not result:
-                return {"success": False, "error": "No face detected for emotion analysis."}
-            emotions = result[0].get("emotion", {})
+                # Try on full image without face detection
+                emotions = _detector.predict_emotions(img, logits=False)
+                if emotions is None:
+                    return {"success": False, "error": "No emotion detected."}
+                dominant = max(emotions, key=emotions.get)
+                total = sum(emotions.values()) or 1.0
+                probabilities = {k: round(v / total, 4) for k, v in emotions.items()}
+                return {
+                    "success": True,
+                    "prediction": dominant,
+                    "confidence": round(probabilities[dominant], 4),
+                    "probabilities": probabilities,
+                }
+            emotions = result[0].get("emotions", {})
             if not emotions:
-                return {"success": False, "error": "Emotion analysis returned no data."}
+                return {"success": False, "error": "No emotions returned."}
+            dominant = max(emotions, key=emotions.get)
             total = sum(emotions.values()) or 1.0
             probabilities = {k: round(v / total, 4) for k, v in emotions.items()}
-            dominant = result[0].get("dominant_emotion", max(emotions, key=emotions.get))
             return {
                 "success": True,
                 "prediction": dominant,
-                "confidence": round(probabilities.get(dominant, 0.0), 4),
+                "confidence": round(probabilities[dominant], 4),
                 "probabilities": probabilities,
             }
         except Exception as e:

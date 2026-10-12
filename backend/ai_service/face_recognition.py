@@ -1,49 +1,35 @@
 """
-FaceRecognizer — uses DeepFace Facenet for embeddings + opencv detector.
-`ready` is a live property — re-checks warmup state on every call so the
-service becomes available as soon as the model download finishes.
+FaceRecognizer — dlib HOG + ResNet128 embeddings via face_recognition library.
+No model downloads at runtime. Works within Railway 512MB RAM.
+Embeddings are 128-dim float arrays — stored in MongoDB as before.
 """
 import os
-import threading
 import numpy as np
-from deepface import DeepFace
 
-FACE_MATCH_THRESHOLD = float(os.environ.get("FACE_MATCH_THRESHOLD", "0.40"))
-_EMBEDDING_MODEL = os.environ.get("FACE_EMBEDDING_MODEL", "Facenet")
-_DETECTOR_BACKEND = os.environ.get("FACE_DETECTOR_BACKEND", "opencv")
+FACE_MATCH_THRESHOLD = float(os.environ.get("FACE_MATCH_THRESHOLD", "0.55"))
 
-_lock = threading.Lock()
-_warmed_up = False
-_warmup_error = None
+_fr = None
+_ready = False
 
 
-def _warmup():
-    global _warmed_up, _warmup_error
-    if _warmed_up:
+def _load():
+    global _fr, _ready
+    if _ready:
         return True
-    with _lock:
-        if _warmed_up:
-            return True
-        try:
-            dummy = np.zeros((160, 160, 3), dtype="uint8")
-            DeepFace.represent(
-                img_path=dummy,
-                model_name=_EMBEDDING_MODEL,
-                detector_backend=_DETECTOR_BACKEND,
-                enforce_detection=False,
-            )
-            _warmed_up = True
-            _warmup_error = None
-            print(f"[FaceRecognizer] ready — model={_EMBEDDING_MODEL}, detector={_DETECTOR_BACKEND}")
-            return True
-        except Exception as e:
-            _warmup_error = str(e)
-            print(f"[FaceRecognizer] warmup error: {e}")
-            return False
+    try:
+        import face_recognition as _face_recognition
+        _fr = _face_recognition
+        _ready = True
+        print("[FaceRecognizer] face_recognition (dlib) ready.")
+        return True
+    except Exception as e:
+        print(f"[FaceRecognizer] load error: {e}")
+        return False
 
 
 def warmup_async():
-    threading.Thread(target=_warmup, daemon=True).start()
+    import threading
+    threading.Thread(target=_load, daemon=True).start()
 
 
 class FaceRecognizer:
@@ -52,106 +38,120 @@ class FaceRecognizer:
 
     @property
     def ready(self):
-        # Live check — becomes True as soon as warmup finishes
-        return _warmed_up or _warmup()
+        return _ready or _load()
 
-    def _represent(self, image_rgb, enforce_detection=True):
-        try:
+    def _get_fr(self):
+        if not self.ready:
+            return None
+        return _fr
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _to_rgb(self, image_rgb):
+        """Ensure uint8 RGB numpy array."""
+        arr = np.asarray(image_rgb, dtype="uint8")
+        if arr.ndim == 2:
             import cv2
-            img_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-            results = DeepFace.represent(
-                img_path=img_bgr,
-                model_name=_EMBEDDING_MODEL,
-                detector_backend=_DETECTOR_BACKEND,
-                enforce_detection=enforce_detection,
-            )
-            return results, None
-        except Exception as e:
-            msg = str(e)
-            if "Face could not be detected" in msg or "No face" in msg.lower():
-                return None, "No face detected. Please use a clear frontal photo."
-            return None, f"Embedding error: {msg}"
+            arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
+        elif arr.shape[2] == 4:
+            arr = arr[:, :, :3]
+        return arr
 
-    def _normalise(self, emb_list):
-        emb = np.array(emb_list, dtype="float32")
-        norm = np.linalg.norm(emb)
-        return emb / norm if norm > 1e-10 else emb
+    def _get_encodings(self, image_rgb, num_jitters=1):
+        """Return (encodings, locations) or (None, error_str)."""
+        fr = self._get_fr()
+        if fr is None:
+            return None, "Face recognition not ready."
+        img = self._to_rgb(image_rgb)
+        locations = fr.face_locations(img, model="hog")
+        if not locations:
+            return None, "No face detected. Please use a clear frontal photo."
+        encodings = fr.face_encodings(img, known_face_locations=locations, num_jitters=num_jitters)
+        return encodings, locations
+
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def detect_faces(self, image_rgb):
-        results, _ = self._represent(image_rgb, enforce_detection=False)
-        if not results:
+        """Return face locations as list of (top, right, bottom, left)."""
+        fr = self._get_fr()
+        if fr is None:
             return []
-        locations = []
-        for r in results:
-            fa = r.get("facial_area", {})
-            x, y = fa.get("x", 0), fa.get("y", 0)
-            w, h = fa.get("w", 0), fa.get("h", 0)
-            locations.append((y, x + w, y + h, x))
-        return locations
+        try:
+            img = self._to_rgb(image_rgb)
+            return fr.face_locations(img, model="hog")
+        except Exception as e:
+            print(f"[FaceRecognizer] detect_faces error: {e}")
+            return []
 
     def process_registration_image(self, image_rgb):
         if not self.ready:
-            return {"success": False, "error": "Face recognition models are still loading. Please wait and try again."}
-        results, err = self._represent(image_rgb, enforce_detection=True)
-        if results is None:
-            return {"success": False, "error": err}
-        if len(results) > 1:
-            return {"success": False, "error": f"{len(results)} faces detected. Ensure only one person is in frame."}
-        emb = self._normalise(results[0]["embedding"])
-        fa = results[0].get("facial_area", {})
-        x, y = fa.get("x", 0), fa.get("y", 0)
-        w, h = fa.get("w", image_rgb.shape[1]), fa.get("h", image_rgb.shape[0])
-        return {
-            "success": True,
-            "embedding": emb.tolist(),
-            "face_location": (y, x + w, y + h, x),
-        }
-
-    @staticmethod
-    def _cosine_distance(a, b):
-        return 1.0 - float(np.clip(np.dot(a, b), -1.0, 1.0))
+            return {"success": False, "error": "Face recognition models are still loading. Please wait."}
+        try:
+            encodings, locations = self._get_encodings(image_rgb, num_jitters=2)
+            if encodings is None:
+                return {"success": False, "error": locations}  # locations holds error str here
+            if len(encodings) > 1:
+                return {"success": False, "error": f"{len(encodings)} faces detected. Ensure only one person is in frame."}
+            emb = np.array(encodings[0], dtype="float32")
+            norm = np.linalg.norm(emb)
+            if norm > 1e-10:
+                emb = emb / norm
+            return {
+                "success": True,
+                "embedding": emb.tolist(),
+                "face_location": locations[0],
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Registration error: {e}"}
 
     def identify(self, image_rgb, known_students):
         if not self.ready:
-            return {"recognized": False, "message": "Face recognition models are still loading. Please wait and try again."}
-        results, err = self._represent(image_rgb, enforce_detection=True)
-        if results is None:
-            return {"recognized": False, "message": err}
-        if len(results) > 1:
-            return {"recognized": False, "message": "Multiple faces detected. Ensure only one person is in frame."}
+            return {"recognized": False, "message": "Face recognition models are still loading. Please wait."}
+        try:
+            encodings, locations = self._get_encodings(image_rgb, num_jitters=1)
+            if encodings is None:
+                return {"recognized": False, "message": locations}
+            if len(encodings) > 1:
+                return {"recognized": False, "message": "Multiple faces detected. Ensure only one person is in frame."}
 
-        emb = self._normalise(results[0]["embedding"])
-        fa = results[0].get("facial_area", {})
-        x, y = fa.get("x", 0), fa.get("y", 0)
-        w, h = fa.get("w", image_rgb.shape[1]), fa.get("h", image_rgb.shape[0])
-        face_location = (y, x + w, y + h, x)
+            query_enc = np.array(encodings[0], dtype="float32")
+            norm = np.linalg.norm(query_enc)
+            if norm > 1e-10:
+                query_enc = query_enc / norm
 
-        best_distance = float("inf")
-        best_student = None
-        for student in known_students:
-            for embedding in student.get("face_embeddings", []):
-                try:
-                    ref = self._normalise(embedding)
-                    if ref.shape != emb.shape:
+            best_distance = float("inf")
+            best_student = None
+
+            for student in known_students:
+                for embedding in student.get("face_embeddings", []):
+                    try:
+                        ref = np.array(embedding, dtype="float32")
+                        ref_norm = np.linalg.norm(ref)
+                        if ref_norm > 1e-10:
+                            ref = ref / ref_norm
+                        if ref.shape != query_enc.shape:
+                            continue
+                        # Euclidean distance on normalised vectors
+                        dist = float(np.linalg.norm(query_enc - ref))
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_student = student
+                    except Exception:
                         continue
-                    dist = self._cosine_distance(emb, ref)
-                    if dist < best_distance:
-                        best_distance = dist
-                        best_student = student
-                except Exception:
-                    continue
 
-        if best_student is None or best_distance > FACE_MATCH_THRESHOLD:
-            return {"recognized": False, "message": "Unknown student. Face not registered in the system."}
+            if best_student is None or best_distance > FACE_MATCH_THRESHOLD:
+                return {"recognized": False, "message": "Unknown student. Face not registered in the system."}
 
-        return {
-            "recognized": True,
-            "student_id": str(best_student["student_id"]),
-            "student_name": best_student.get("name", ""),
-            "roll_no": best_student.get("roll_no", ""),
-            "distance": round(best_distance, 4),
-            "face_location": face_location,
-        }
+            return {
+                "recognized": True,
+                "student_id": str(best_student["student_id"]),
+                "student_name": best_student.get("name", ""),
+                "roll_no": best_student.get("roll_no", ""),
+                "distance": round(best_distance, 4),
+                "face_location": locations[0],
+            }
+        except Exception as e:
+            return {"recognized": False, "message": f"Recognition error: {e}"}
 
     def crop_face(self, image_bgr, face_location, padding=10):
         top, right, bottom, left = face_location

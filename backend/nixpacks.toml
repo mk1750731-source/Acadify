@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["python311", "libGL", "libGLU", "glib", "zlib", "gcc", "cmake"]
+nixPkgs = ["python311", "cmake", "gcc", "libGL", "libGLU", "glib", "zlib", "blas", "lapack"]
 
 [phases.install]
-cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+cmds = ["pip install --upgrade pip", "pip install dlib==19.24.2", "pip install -r requirements.txt"]
 
 [start]
 cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180 --limit-request-line 0 --limit-request-field_size 0"
