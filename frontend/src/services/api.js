@@ -3,7 +3,12 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'https://acadify-backend-production-d80e.up.railway.app',
   withCredentials: true,
-  headers: { 'Accept': 'application/json' }
+  headers: {
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  },
+  maxBodyLength: Infinity,
+  maxContentLength: Infinity,
 });
 
 // In-memory cache: { url: { data, ts } }
