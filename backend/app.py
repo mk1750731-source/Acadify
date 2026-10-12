@@ -21,6 +21,8 @@ def create_app():
         "http://127.0.0.1:3000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
         "https://acadify-nu-dusky.vercel.app",
         "https://acadify-frontend-production.up.railway.app",
     ]
@@ -45,6 +47,16 @@ def create_app():
     login_manager.login_message_category = "warning"
     login_manager.init_app(app)
 
+    @login_manager.unauthorized_handler
+    def unauthorized():
+        from flask import request, jsonify
+        if (request.is_json
+                or request.headers.get('Accept') == 'application/json'
+                or request.path.startswith('/api/')):
+            return jsonify({'error': 'Authentication required', 'redirect': '/login'}), 401
+        from flask import redirect, url_for
+        return redirect(url_for('auth.login', next=request.url))
+
     @login_manager.user_loader
     def load_user(user_id):
         return User.get_by_id(user_id)
@@ -68,12 +80,7 @@ def create_app():
     app.register_blueprint(teacher_bp)
     app.register_blueprint(parent_bp)
 
-    # Warm up AI models in background without blocking startup
-    try:
-        from ai_service import warmup_models
-        warmup_models()
-    except Exception:
-        app.logger.exception("AI model warm-up failed")
+    # AI runs client-side — no server warmup needed
 
     return app
 
