@@ -1,6 +1,5 @@
 import os
-import re
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_login import LoginManager
 
@@ -11,33 +10,22 @@ import react_api
 
 react_api.apply_patches()
 
-# Origins allowed at all times
-_STATIC_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:4173",
-    "http://127.0.0.1:4173",
-    "https://acadify-nu-dusky.vercel.app",
-    "https://acadify-frontend-production.up.railway.app",
-]
 
-# Add FRONTEND_URL env var if set (Railway variable)
-_env_frontend = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
-if _env_frontend:
-    _STATIC_ORIGINS.append(_env_frontend)
-
-
-def _cors_origin(origin):
-    """Allow any *.up.railway.app or *.vercel.app plus static list."""
-    if origin in _STATIC_ORIGINS:
-        return True
-    if re.match(r'https://[\w-]+\.up\.railway\.app$', origin):
-        return True
-    if re.match(r'https://[\w-]+\.vercel\.app$', origin):
-        return True
-    return False
+def _get_origins():
+    origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        "https://acadify-nu-dusky.vercel.app",
+        "https://acadify-frontend-production.up.railway.app",
+    ]
+    env_frontend = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
+    if env_frontend:
+        origins.append(env_frontend)
+    return origins
 
 
 def create_app():
@@ -46,7 +34,7 @@ def create_app():
 
     CORS(
         app,
-        origins=_cors_origin,
+        origins=_get_origins(),
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
