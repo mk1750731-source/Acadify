@@ -24,8 +24,10 @@ frontend/ai_model/
 frontend/ai_service/
 frontend/AI_FACE_PROJECT/
 
-# Runtime-generated model cache (regenerated on first startup)
-backend/face_attendance_models/best_facenet_model_fixed.keras
+# Keras model files — DeepFace downloads pretrained weights automatically
+backend/face_attendance_models/*.keras
+backend/ai_model/*.keras
+backend/ai_model/*.pkl
 
 # Training data (not needed at runtime)
 backend/ai_model/student_dataset.csv

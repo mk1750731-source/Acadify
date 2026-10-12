@@ -1,113 +1,94 @@
 """
-EmotionModel — loads face_expression_model.keras using metadata from face_expression_model.pkl.
-Never reloads on each request; instantiate once and reuse.
+EmotionModel — facial expression detection using DeepFace's pretrained emotion model.
+Same public API as before: ready, predict(face_bgr).
 """
-import os
-import pickle
+import threading
 
-_BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MODEL_DIRS = [
-    os.path.join(_BASE, 'ai_model'),
-]
+_lock = threading.Lock()
+_warmed_up = False
+
+EMOTION_CLASSES = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+
+
+def _warmup():
+    global _warmed_up
+    if _warmed_up:
+        return
+    with _lock:
+        if _warmed_up:
+            return
+        try:
+            from deepface import DeepFace
+            import numpy as np
+            dummy = np.zeros((48, 48, 3), dtype="uint8")
+            DeepFace.analyze(
+                img_path=dummy,
+                actions=["emotion"],
+                enforce_detection=False,
+                silent=True,
+            )
+            _warmed_up = True
+            print("[EmotionModel] DeepFace emotion model warmed up.")
+        except Exception as e:
+            print(f"[EmotionModel] Warmup error: {e}")
 
 
 class EmotionModel:
     def __init__(self):
-        self.model    = None
-        self.metadata = None
-        self.img_size = (48, 48)
-        self.classes  = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+        self._ready = False
         self._load()
 
     def _load(self):
-        model_dir = next((path for path in _MODEL_DIRS if os.path.exists(
-            os.path.join(path, 'face_expression_model.keras'))), _MODEL_DIRS[-1])
-        keras_path = os.path.join(model_dir, 'face_expression_model.keras')
-        pkl_path = os.path.join(model_dir, 'face_expression_model.pkl')
-
-        # Always initialise idx_to_class so predict() never crashes
-        self.idx_to_class = {i: c for i, c in enumerate(self.classes)}
-
-        # ── 1. Load PKL metadata ──────────────────────────────────────────────
-        if not os.path.exists(pkl_path):
-            print(f"[EmotionModel] WARNING: PKL not found at {pkl_path}, using defaults")
-        else:
-            try:
-                with open(pkl_path, 'rb') as f:
-                    self.metadata = pickle.load(f)
-                self.img_size = self.metadata.get('image_size', (48, 48))
-                classes_raw = self.metadata.get('classes',
-                              self.metadata.get('index_to_class',
-                              {i: c for i, c in enumerate(self.classes)}))
-                # Normalise: support both list and dict formats
-                if isinstance(classes_raw, dict):
-                    self.idx_to_class = {int(k): v for k, v in classes_raw.items()}
-                    self.classes = [self.idx_to_class[i] for i in sorted(self.idx_to_class)]
-                else:
-                    self.classes = list(classes_raw)
-                    self.idx_to_class = {i: c for i, c in enumerate(self.classes)}
-                print(f"[EmotionModel] PKL loaded — classes: {self.classes}, img_size: {self.img_size}")
-            except Exception as e:
-                print(f"[EmotionModel] PKL load error: {e}, using defaults")
-
-        # ── 2. Load Keras model ───────────────────────────────────────────────
-        if not os.path.exists(keras_path):
-            print(f"[EmotionModel] WARNING: Keras model not found at {keras_path}")
-            return
         try:
-            import tensorflow as tf
-            from model_compat import load_compatible_model
-            self.model = load_compatible_model(keras_path)
-            print(f"[EmotionModel] Keras model loaded successfully from {keras_path}")
+            _warmup()
+            self._ready = _warmed_up
         except Exception as e:
-            print(f"[EmotionModel] Keras load error: {e}")
+            print(f"[EmotionModel] Load error: {e}")
 
     @property
     def ready(self):
-        return self.model is not None
+        return self._ready
 
     def predict(self, face_bgr_or_gray):
         """
         Accept a BGR or grayscale numpy array (cropped face region).
-        Returns dict: {success, prediction, confidence} or {success, error}
+        Returns dict: {success, prediction, confidence, probabilities}
         """
-        if not self.ready:
-            return {'success': False, 'error': 'Emotion model not loaded'}
+        if not self._ready:
+            return {"success": False, "error": "Emotion model not loaded."}
         try:
             import cv2
             import numpy as np
             img = face_bgr_or_gray
-            # Convert to grayscale if needed
-            if len(img.shape) == 3 and img.shape[2] == 3:
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img = cv2.resize(img, self.img_size)
-            img = img.astype('float32') / 255.0
-            img = np.expand_dims(np.expand_dims(img, axis=-1), axis=0)  # (1,H,W,1)
-            preds = self.model.predict(img, verbose=0)
-            probabilities = np.asarray(preds[0], dtype='float32')
-            idx   = int(np.argmax(preds))
-            conf  = float(np.max(probabilities))
-            label = self.idx_to_class.get(idx, 'unknown')
-            distribution = {
-                self.idx_to_class.get(i, 'unknown'): round(float(probability), 4)
-                for i, probability in enumerate(probabilities)
-            }
+            # Ensure BGR 3-channel for DeepFace
+            if len(img.shape) == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            result = DeepFace_analyze(img)
+            if not result:
+                return {"success": False, "error": "No face detected for emotion analysis."}
+            emotions = result[0].get("emotion", {})
+            if not emotions:
+                return {"success": False, "error": "Emotion analysis returned no data."}
+            # Normalise to 0-1 probabilities
+            total = sum(emotions.values()) or 1.0
+            probabilities = {k: round(v / total, 4) for k, v in emotions.items()}
+            dominant = result[0].get("dominant_emotion", max(emotions, key=emotions.get))
+            confidence = probabilities.get(dominant, 0.0)
             return {
-                'success': True,
-                'prediction': label,
-                'confidence': round(conf, 4),
-                'probabilities': distribution
+                "success": True,
+                "prediction": dominant,
+                "confidence": round(confidence, 4),
+                "probabilities": probabilities,
             }
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {"success": False, "error": str(e)}
 
-    def predict_from_path(self, image_path):
-        """Convenience: load image from disk then predict."""
-        try:
-            import cv2
-            img = cv2.imread(image_path)
-            if img is None:
-                return {'success': False, 'error': 'Cannot read image file'}
-            return self.predict(img)
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+
+def DeepFace_analyze(img_bgr):
+    from deepface import DeepFace
+    return DeepFace.analyze(
+        img_path=img_bgr,
+        actions=["emotion"],
+        enforce_detection=False,
+        silent=True,
+    )

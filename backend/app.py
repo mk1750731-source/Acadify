@@ -8,12 +8,6 @@ from models.db import mongo
 from models.user import User
 import react_api
 
-import tensorflow as tf
-import keras
-
-print("[VERSION CHECK] TensorFlow:", tf.__version__)
-print("[VERSION CHECK] Keras:", keras.__version__)
-
 react_api.apply_patches()
 
 
