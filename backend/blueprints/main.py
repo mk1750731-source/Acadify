@@ -9,33 +9,26 @@ main_bp = Blueprint('main', __name__)
 def session_info():
     if not current_user.is_authenticated:
         return jsonify({'user': None}), 401
-    return jsonify({'user': {
-        'id': str(current_user.id),
-        'name': current_user.name,
-        'email': current_user.email,
-        'role': current_user.role,
-    }})
+
+    return jsonify({
+        'user': {
+            'id': str(current_user.id),
+            'name': current_user.name,
+            'email': current_user.email,
+            'role': current_user.role,
+        }
+    })
+
 
 @main_bp.route('/')
 def index():
-    sample_prediction = {
-        'model_version': 'NEXUS-ML-v1.0',
-        'predicted_at': datetime.datetime.now(datetime.timezone.utc),
-        'risk_score': 12.4,
-        'confidence': 94.8,
-        'performance_forecast': {
-            'grade_tier': 'A- / Projected'
-        },
-        'recommendations': [
-            'Maintain current academic velocity; eligible for Advanced Research Honors.',
-            'Recommended enrollment in Quantum Information Systems II.'
-        ]
-    }
-    return render_template('index.html', prediction=sample_prediction)
+    return redirect('https://acadify-nu-dusky.vercel.app')
+
 
 @main_bp.route('/about')
 def about():
     return render_template('about.html')
+
 
 @main_bp.route('/contact', methods=['GET', 'POST'])
 def contact():
@@ -43,11 +36,17 @@ def contact():
         name = request.form.get('name')
         email = request.form.get('email')
         message = request.form.get('message')
-        flash('Thank you for contacting EDU Intelligence Administration. Our team will get back to you shortly.', 'success')
+
+        flash(
+            'Thank you for contacting EDU Intelligence Administration. '
+            'Our team will get back to you shortly.',
+            'success'
+        )
         return redirect(url_for('main.contact'))
+
     return render_template('contact.html')
+
 
 @main_bp.route('/research')
 def research():
     return render_template('research.html')
-
