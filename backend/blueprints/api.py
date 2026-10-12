@@ -79,13 +79,9 @@ def ai_model_status():
         models['student_risk'] = {'ready': False, 'error': str(error)}
         models['gpa_forecast'] = {'ready': False, 'error': str(error)}
 
-    try:
-        from ai_service import emotion_predictor, face_recognizer
-        models['facial_expression'] = {'ready': emotion_predictor.ready}
-        models['face_recognition'] = {'ready': face_recognizer.ready}
-    except Exception as error:
-        models['facial_expression'] = {'ready': False, 'error': str(error)}
-        models['face_recognition'] = {'ready': False, 'error': str(error)}
+    # Face AI runs client-side via face-api.js — always report ready
+    models['facial_expression'] = {'ready': True, 'note': 'client-side'}
+    models['face_recognition'] = {'ready': True, 'note': 'client-side'}
 
     return jsonify({'models': models})
 

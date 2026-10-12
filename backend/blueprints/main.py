@@ -22,7 +22,9 @@ def session_info():
 
 @main_bp.route('/')
 def index():
-    return redirect('https://acadify-nu-dusky.vercel.app')
+    import os
+    frontend = os.environ.get('FRONTEND_URL', 'https://acadify-nu-dusky.vercel.app').rstrip('/')
+    return redirect(frontend)
 
 
 @main_bp.route('/about')

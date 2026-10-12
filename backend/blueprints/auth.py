@@ -100,8 +100,11 @@ def register():
         AttendanceModel.seed_subjects(student['_id'], department, int(semester))
 
         # Seed default timetable
-        from models.timetable import TimetableModel
-        TimetableModel.seed_default(student['_id'], department)
+        try:
+            from models.timetable import TimetableModel
+            TimetableModel.seed_default(student['_id'], department)
+        except Exception:
+            pass
 
         # Welcome notification
         from models.notification import NotificationModel

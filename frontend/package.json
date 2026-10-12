@@ -11,8 +11,10 @@
     "start": "serve -s dist -l $PORT"
   },
   "dependencies": {
+    "@vladmandic/face-api": "^1.7.15",
     "axios": "^1.20.0",
     "clsx": "^2.1.1",
+    "face-api.js": "^0.22.2",
     "framer-motion": "^13.4.4",
     "lucide-react": "^1.48.0",
     "react": "^19.2.8",
