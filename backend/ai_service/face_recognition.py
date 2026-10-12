@@ -1,15 +1,15 @@
 """
 FaceRecognizer — face detection, embedding generation, and identity matching.
-Uses DeepFace with the Facenet pretrained model (downloaded once on first use).
-Same public API as before: process_registration_image, identify, detect_faces, crop_face.
+Uses DeepFace with the Facenet pretrained model.
 """
 import os
 import threading
 import numpy as np
+from deepface import DeepFace
 
 FACE_MATCH_THRESHOLD = float(os.environ.get("FACE_MATCH_THRESHOLD", "0.40"))
-_EMBEDDING_MODEL = os.environ.get("FACE_EMBEDDING_MODEL", "Facenet")  # or "VGG-Face", "ArcFace"
-_DETECTOR_BACKEND = os.environ.get("FACE_DETECTOR_BACKEND", "opencv")  # lightweight, no extra downloads
+_EMBEDDING_MODEL = os.environ.get("FACE_EMBEDDING_MODEL", "Facenet")
+_DETECTOR_BACKEND = os.environ.get("FACE_DETECTOR_BACKEND", "opencv")
 
 _lock = threading.Lock()
 _warmed_up = False
@@ -23,8 +23,6 @@ def _warmup():
         if _warmed_up:
             return
         try:
-            from deepface import DeepFace
-            import numpy as np
             dummy = np.zeros((160, 160, 3), dtype="uint8")
             DeepFace.represent(
                 img_path=dummy,
@@ -33,7 +31,7 @@ def _warmup():
                 enforce_detection=False,
             )
             _warmed_up = True
-            print(f"[FaceRecognizer] DeepFace warmed up — model={_EMBEDDING_MODEL}, detector={_DETECTOR_BACKEND}")
+            print(f"[FaceRecognizer] warmed up — model={_EMBEDDING_MODEL}, detector={_DETECTOR_BACKEND}")
         except Exception as e:
             print(f"[FaceRecognizer] Warmup error: {e}")
 
@@ -41,9 +39,6 @@ def _warmup():
 class FaceRecognizer:
     def __init__(self):
         self._ready = False
-        self._load()
-
-    def _load(self):
         try:
             _warmup()
             self._ready = _warmed_up
@@ -54,75 +49,66 @@ class FaceRecognizer:
     def ready(self):
         return self._ready
 
-    # ── Detection ─────────────────────────────────────────────────────────────
-
-    def detect_faces(self, image_rgb):
-        """Return face locations as list of (top, right, bottom, left)."""
-        try:
-            import cv2
-            from deepface.detectors import DetectorWrapper
-            img_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-            faces = DetectorWrapper.detect_faces(
-                detector_backend=_DETECTOR_BACKEND,
-                img=img_bgr,
-                align=False,
-            )
-            locations = []
-            for face_obj in faces:
-                region = face_obj.facial_area if hasattr(face_obj, 'facial_area') else face_obj.get('facial_area', {})
-                x = region.x if hasattr(region, 'x') else region.get('x', 0)
-                y = region.y if hasattr(region, 'y') else region.get('y', 0)
-                w = region.w if hasattr(region, 'w') else region.get('w', 0)
-                h = region.h if hasattr(region, 'h') else region.get('h', 0)
-                locations.append((y, x + w, y + h, x))
-            return locations
-        except Exception as e:
-            print(f"[FaceRecognizer] detect_faces error: {e}")
-            return []
-
     # ── Embeddings ────────────────────────────────────────────────────────────
 
-    def _get_embedding(self, image_rgb):
-        """Return L2-normalised embedding array from an RGB image, or None."""
+    def _represent(self, image_rgb, enforce_detection=True):
+        """
+        Run DeepFace.represent and return (results, error_str).
+        results is the raw list from DeepFace; each item has 'embedding' and 'facial_area'.
+        """
         try:
-            from deepface import DeepFace
             import cv2
             img_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
             results = DeepFace.represent(
                 img_path=img_bgr,
                 model_name=_EMBEDDING_MODEL,
                 detector_backend=_DETECTOR_BACKEND,
-                enforce_detection=True,
+                enforce_detection=enforce_detection,
             )
-            if not results:
-                return None, "No face detected."
-            if len(results) > 1:
-                return None, f"{len(results)} faces detected. Please ensure only one person is in the frame."
-            emb = np.array(results[0]["embedding"], dtype="float32")
-            norm = np.linalg.norm(emb)
-            if norm > 1e-10:
-                emb = emb / norm
-            return emb, None
+            return results, None
         except Exception as e:
             msg = str(e)
             if "Face could not be detected" in msg or "No face" in msg.lower():
                 return None, "No face detected. Please use a clear frontal photo."
             return None, f"Embedding error: {msg}"
 
+    def _normalise(self, emb_list):
+        emb = np.array(emb_list, dtype="float32")
+        norm = np.linalg.norm(emb)
+        return emb / norm if norm > 1e-10 else emb
+
+    # ── Detection (used for emotion crop when recognition already ran) ────────
+
+    def detect_faces(self, image_rgb):
+        """Return face locations as list of (top, right, bottom, left)."""
+        results, _ = self._represent(image_rgb, enforce_detection=False)
+        if not results:
+            return []
+        locations = []
+        for r in results:
+            fa = r.get("facial_area", {})
+            x = fa.get("x", 0); y = fa.get("y", 0)
+            w = fa.get("w", 0); h = fa.get("h", 0)
+            locations.append((y, x + w, y + h, x))
+        return locations
+
     # ── Registration ──────────────────────────────────────────────────────────
 
     def process_registration_image(self, image_rgb):
         if not self._ready:
             return {"success": False, "error": "Face recognition models not available."}
-        emb, err = self._get_embedding(image_rgb)
-        if emb is None:
+        results, err = self._represent(image_rgb, enforce_detection=True)
+        if results is None:
             return {"success": False, "error": err}
-        # Detect location for crop reference
-        locs = self.detect_faces(image_rgb)
+        if len(results) > 1:
+            return {"success": False, "error": f"{len(results)} faces detected. Ensure only one person is in frame."}
+        emb = self._normalise(results[0]["embedding"])
+        fa = results[0].get("facial_area", {})
+        x, y, w, h = fa.get("x", 0), fa.get("y", 0), fa.get("w", image_rgb.shape[1]), fa.get("h", image_rgb.shape[0])
         return {
             "success": True,
             "embedding": emb.tolist(),
-            "face_location": locs[0] if locs else (0, image_rgb.shape[1], image_rgb.shape[0], 0),
+            "face_location": (y, x + w, y + h, x),
         }
 
     # ── Recognition ───────────────────────────────────────────────────────────
@@ -135,9 +121,16 @@ class FaceRecognizer:
         if not self._ready:
             return {"recognized": False, "message": "Face recognition models not available."}
 
-        emb, err = self._get_embedding(image_rgb)
-        if emb is None:
+        results, err = self._represent(image_rgb, enforce_detection=True)
+        if results is None:
             return {"recognized": False, "message": err}
+        if len(results) > 1:
+            return {"recognized": False, "message": "Multiple faces detected. Ensure only one person is in frame."}
+
+        emb = self._normalise(results[0]["embedding"])
+        fa = results[0].get("facial_area", {})
+        x, y, w, h = fa.get("x", 0), fa.get("y", 0), fa.get("w", image_rgb.shape[1]), fa.get("h", image_rgb.shape[0])
+        face_location = (y, x + w, y + h, x)
 
         best_distance = float("inf")
         best_student = None
@@ -145,10 +138,7 @@ class FaceRecognizer:
         for student in known_students:
             for embedding in student.get("face_embeddings", []):
                 try:
-                    ref = np.asarray(embedding, dtype="float32")
-                    norm = np.linalg.norm(ref)
-                    if norm > 1e-10:
-                        ref = ref / norm
+                    ref = self._normalise(embedding)
                     if ref.shape != emb.shape:
                         continue
                     dist = self._cosine_distance(emb, ref)
@@ -161,14 +151,13 @@ class FaceRecognizer:
         if best_student is None or best_distance > FACE_MATCH_THRESHOLD:
             return {"recognized": False, "message": "Unknown student. Face not registered in the system."}
 
-        locs = self.detect_faces(image_rgb)
         return {
             "recognized": True,
             "student_id": str(best_student["student_id"]),
             "student_name": best_student.get("name", ""),
             "roll_no": best_student.get("roll_no", ""),
             "distance": round(best_distance, 4),
-            "face_location": locs[0] if locs else (0, image_rgb.shape[1], image_rgb.shape[0], 0),
+            "face_location": face_location,
         }
 
     # ── Crop ──────────────────────────────────────────────────────────────────
