@@ -50,24 +50,20 @@ def create_app():
         app,
         resources={
             r"/*": {
-                "origins": allowed_origins
+                "origins": [
+                    "https://acadify-frontend-production.up.railway.app",
+                    "https://acadify-nu-dusky.vercel.app",
+                    "http://localhost:3000",
+                    "http://127.0.0.1:3000",
+                    "http://localhost:5173",
+                    "http://127.0.0.1:5173",
+                ]
             }
         },
         supports_credentials=True,
-        allow_headers=[
-            "Content-Type",
-            "Authorization",
-        ],
-        methods=[
-            "GET",
-            "POST",
-            "PUT",
-            "PATCH",
-            "DELETE",
-            "OPTIONS",
-        ],
+        allow_headers=["Content-Type", "Authorization"],
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
-
     # Initialize MongoDB.
     mongo.init_app(app)
 
