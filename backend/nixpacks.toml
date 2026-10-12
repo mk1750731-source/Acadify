@@ -5,4 +5,4 @@ nixPkgs = ["python311", "libGL", "libGLU", "glib", "zlib", "gcc", "cmake"]
 cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
 
 [start]
-cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120"
+cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180 --limit-request-line 0 --limit-request-field_size 0"
