@@ -18,7 +18,7 @@ scikit-learn==1.6.1
 imbalanced-learn==0.14.2
 h5py==3.12.1
 ml-dtypes==0.5.3
-protobuf==5.29.3
+protobuf==6.33.5
 
 pymongo==4.17.0
 bcrypt==5.0.0
