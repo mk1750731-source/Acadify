@@ -56,7 +56,8 @@ class EmotionModel:
             return
         try:
             import tensorflow as tf
-            self.model = tf.keras.models.load_model(keras_path)
+            from model_compat import load_compatible_model
+            self.model = load_compatible_model(keras_path)
             print(f"[EmotionModel] Keras model loaded successfully from {keras_path}")
         except Exception as e:
             print(f"[EmotionModel] Keras load error: {e}")
