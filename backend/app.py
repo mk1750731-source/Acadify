@@ -1,6 +1,5 @@
 
 import os
-
 from flask import Flask
 from flask_cors import CORS
 from flask_login import LoginManager
@@ -18,7 +17,7 @@ react_api.apply_patches()
 def create_app():
     app = Flask(__name__)
 
-    # Frontend origins allowed to call the backend.
+    # Frontend origins allowed to communicate with the backend.
     allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
@@ -26,24 +25,47 @@ def create_app():
         "http://127.0.0.1:5173",
         "https://acadify-nu-dusky.vercel.app",
         "https://acadify-frontend-production.up.railway.app",
-        os.environ.get("FRONTEND_URL", ""),
     ]
 
-    # Remove empty entries and trailing slashes.
-    allowed_origins = [
-        origin.rstrip("/")
-        for origin in allowed_origins
-        if origin and origin.strip()
-    ]
+    # Optionally allow a frontend URL configured in Railway variables.
+    frontend_url = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
 
-    # Load Flask configuration.
+    if frontend_url:
+        allowed_origins.append(frontend_url)
+
+    # Normalize and remove duplicate origins.
+    allowed_origins = list(
+        dict.fromkeys(
+            origin.strip().rstrip("/")
+            for origin in allowed_origins
+            if origin and origin.strip()
+        )
+    )
+
+    # Load application configuration before initializing extensions.
     app.config.from_object(Config)
 
-    # Configure CORS for credentialed requests.
+    # Enable CORS for API and application routes, including preflight requests.
     CORS(
         app,
+        resources={
+            r"/*": {
+                "origins": allowed_origins
+            }
+        },
         supports_credentials=True,
-        origins=allowed_origins,
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+        ],
+        methods=[
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "OPTIONS",
+        ],
     )
 
     # Initialize MongoDB.
@@ -78,27 +100,21 @@ def create_app():
     app.register_blueprint(teacher_bp)
     app.register_blueprint(parent_bp)
 
-    # Warm up AI models.
-    # Keep the existing implementation; verify in ai_service.py
-    # whether warmup_models() runs asynchronously.
+    # Warm up AI models without preventing the app from starting
+    # if a model fails to load.
     try:
         from ai_service import warmup_models
         warmup_models()
-    except Exception as exc:
-        app.logger.exception(
-            "AI model warm-up failed: %s",
-            exc,
-        )
+    except Exception:
+        app.logger.exception("AI model warm-up failed")
 
     return app
 
 
-# Gunicorn imports this object in production.
 app = create_app()
 
 
 if __name__ == "__main__":
-    # Local development only.
     app.run(
         host="127.0.0.1",
         port=5000,
