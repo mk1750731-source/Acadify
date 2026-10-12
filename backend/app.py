@@ -40,15 +40,28 @@ def create_app():
     # Load application configuration before initializing extensions.
     app.config.from_object(Config)
 
-    # Configure CORS once for all routes, including OPTIONS preflight.
+    
+    # Configure CORS for local development and deployed frontends.
     CORS(
         app,
-        resources={r"/*": {"origins": sorted(allowed_origins)}},
+        resources={
+            r"/*": {
+                "origins": [
+                    "https://acadify-frontend-production.up.railway.app",
+                    "https://acadify-nu-dusky.vercel.app",
+                    "http://localhost:3000",
+                    "http://127.0.0.1:3000",
+                    "http://localhost:5173",
+                    "http://127.0.0.1:5173",
+                ]
+            }
+        },
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         vary_header=True,
     )
+
 
     # Explicitly handle OPTIONS requests.
     # Flask-CORS adds the appropriate headers after the response is created.
