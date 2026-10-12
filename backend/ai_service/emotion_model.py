@@ -1,5 +1,6 @@
 """
-EmotionModel — facial expression detection using DeepFace's pretrained emotion model.
+EmotionModel — facial expression detection using DeepFace.
+`ready` is a live property — re-checks warmup state on every call.
 """
 import threading
 from deepface import DeepFace
@@ -11,35 +12,36 @@ _warmed_up = False
 def _warmup():
     global _warmed_up
     if _warmed_up:
-        return
+        return True
     with _lock:
         if _warmed_up:
-            return
+            return True
         try:
             import numpy as np
             dummy = np.zeros((48, 48, 3), dtype="uint8")
             DeepFace.analyze(img_path=dummy, actions=["emotion"], enforce_detection=False, silent=True)
             _warmed_up = True
-            print("[EmotionModel] warmed up.")
+            print("[EmotionModel] ready.")
+            return True
         except Exception as e:
-            print(f"[EmotionModel] Warmup error: {e}")
+            print(f"[EmotionModel] warmup error: {e}")
+            return False
+
+
+def warmup_async():
+    threading.Thread(target=_warmup, daemon=True).start()
 
 
 class EmotionModel:
     def __init__(self):
-        self._ready = False
-        try:
-            _warmup()
-            self._ready = _warmed_up
-        except Exception as e:
-            print(f"[EmotionModel] Load error: {e}")
+        warmup_async()
 
     @property
     def ready(self):
-        return self._ready
+        return _warmed_up or _warmup()
 
     def predict(self, face_bgr_or_gray):
-        if not self._ready:
+        if not self.ready:
             return {"success": False, "error": "Emotion model not loaded."}
         try:
             import cv2

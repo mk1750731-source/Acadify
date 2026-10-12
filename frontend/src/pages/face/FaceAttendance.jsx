@@ -28,31 +28,41 @@ export default function FaceAttendance() {
   const [scanResult, setScanResult] = useState(null);
   const [message, setMessage] = useState('');
 
+  const statusPollRef = useRef(null);
+
+  const pollModelStatus = () => {
+    api.get('/api/face/status', { noCache: true })
+      .then(r => {
+        if (r.data?.ready) {
+          setModelReady(true);
+          setInitError('');
+        } else {
+          setInitError('Models loading — will retry...');
+          statusPollRef.current = setTimeout(pollModelStatus, 4000);
+        }
+      })
+      .catch(err => {
+        if (err.response?.status === 503) {
+          setInitError('Models loading — will retry...');
+          statusPollRef.current = setTimeout(pollModelStatus, 4000);
+        } else {
+          setInitError('Could not reach face recognition service.');
+          setModelReady(true); // allow attempt anyway
+        }
+      });
+  };
+
   useEffect(() => {
     api.get('/api/face/subjects', { noCache: true })
       .then(r => setSubjects(r.data.subjects || []))
       .catch(() => {});
 
-    // Check model status — don't block UI if this fails
-    api.get('/api/face/status', { noCache: true })
-      .then(r => {
-        if (r.data?.ready) setModelReady(true);
-        else setInitError(r.data?.message || 'Face models not ready yet.');
-      })
-      .catch(err => {
-        // 503 means models still loading — still allow manual scan attempt
-        if (err.response?.status === 503) {
-          setInitError('Models still loading — try scanning in a moment.');
-          setModelReady(true); // allow attempt; backend will reject if truly not ready
-        } else {
-          setInitError('Could not reach face recognition service.');
-        }
-      });
-
+    pollModelStatus();
     loadTodaySessions();
     return () => {
       streamRef.current?.getTracks().forEach(t => t.stop());
       clearTimeout(autoScanRef.current);
+      clearTimeout(statusPollRef.current);
     };
   }, []);
 

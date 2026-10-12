@@ -15,6 +15,27 @@ export default function FaceRegister() {
   const [students, setStudents] = useState([]);
   const [selectedStudent, setSelectedStudent] = useState('');
 
+  const statusPollRef = useRef(null);
+
+  const pollModelStatus = () => {
+    api.get('/api/face/status', { noCache: true })
+      .then(() => {
+        setModelReady(true);
+        setStatus(s => s === 'initializing' ? 'ready' : s);
+        setMessage(m => m === 'Preparing AI face models...' ? 'Position your face in the frame and click capture.' : m);
+      })
+      .catch(err => {
+        if (err.response?.status === 503) {
+          setMessage('Models loading — please wait...');
+          statusPollRef.current = setTimeout(pollModelStatus, 4000);
+        } else {
+          setModelReady(true);
+          setStatus(s => s === 'initializing' ? 'ready' : s);
+          setMessage('Ready — position your face and click capture.');
+        }
+      });
+  };
+
   useEffect(() => {
     const fetchInfo = async () => {
       try {
@@ -34,20 +55,12 @@ export default function FaceRegister() {
       }
     };
     fetchInfo();
-    api.get('/api/face/status')
-      .then(() => {
-        setModelReady(true);
-        setStatus(current => current === 'initializing' ? 'ready' : current);
-        setMessage(current => current === 'Preparing AI face models...'
-          ? 'Position your face in the frame and click capture.'
-          : current);
-      })
-      .catch((error) => {
-        setStatus('error');
-        setMessage(error.response?.data?.message || 'Face recognition models are unavailable.');
-      });
+    pollModelStatus();
     startCamera();
-    return () => streamRef.current?.getTracks().forEach((track) => track.stop());
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      clearTimeout(statusPollRef.current);
+    };
   }, []);
 
   async function startCamera() {

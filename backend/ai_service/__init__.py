@@ -1,56 +1,52 @@
-"""Lazy access to the face-analysis services used by the API routes."""
+"""Lazy singletons for face AI services."""
 import threading
 
-
-class _LazyService:
-	def __init__(self, service_class):
-		self._service_class = service_class
-		self._instance = None
-		self._lock = threading.Lock()
-
-	def _get(self):
-		if self._instance is None:
-			with self._lock:
-				if self._instance is None:
-					self._instance = self._service_class()
-		return self._instance
-
-	def __getattr__(self, name):
-		return getattr(self._get(), name)
+_lock = threading.Lock()
+_face_recognizer = None
+_emotion_predictor = None
 
 
-def _emotion_model_class():
-	from ai_service.emotion_model import EmotionModel
-	return EmotionModel
+def _get_face_recognizer():
+    global _face_recognizer
+    if _face_recognizer is None:
+        with _lock:
+            if _face_recognizer is None:
+                from ai_service.face_recognition import FaceRecognizer
+                _face_recognizer = FaceRecognizer()
+    return _face_recognizer
 
 
-def _face_recognizer_class():
-	from ai_service.face_recognition import FaceRecognizer
-	return FaceRecognizer
+def _get_emotion_predictor():
+    global _emotion_predictor
+    if _emotion_predictor is None:
+        with _lock:
+            if _emotion_predictor is None:
+                from ai_service.emotion_model import EmotionModel
+                _emotion_predictor = EmotionModel()
+    return _emotion_predictor
 
 
-class _LazyFactoryService(_LazyService):
-	def _get(self):
-		if self._instance is None:
-			with self._lock:
-				if self._instance is None:
-					self._instance = self._service_class()()
-		return self._instance
+class _Proxy:
+    def __init__(self, getter):
+        object.__setattr__(self, '_getter', getter)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, '_getter')(), name)
 
 
-emotion_predictor = _LazyFactoryService(_emotion_model_class)
-face_recognizer = _LazyFactoryService(_face_recognizer_class)
+face_recognizer = _Proxy(_get_face_recognizer)
+emotion_predictor = _Proxy(_get_emotion_predictor)
 
 
 def warmup_models():
-	"""Eagerly load both AI models in a background thread at startup."""
-	def _load():
-		try:
-			_ = face_recognizer.ready
-		except Exception as e:
-			print(f"[warmup] face_recognizer error: {e}")
-		try:
-			_ = emotion_predictor.ready
-		except Exception as e:
-			print(f"[warmup] emotion_predictor error: {e}")
-	threading.Thread(target=_load, daemon=True).start()
+    """Trigger instantiation (and async warmup) of both services at startup."""
+    def _load():
+        try:
+            _get_face_recognizer()
+        except Exception as e:
+            print(f"[warmup] face_recognizer error: {e}")
+        try:
+            _get_emotion_predictor()
+        except Exception as e:
+            print(f"[warmup] emotion_predictor error: {e}")
+    threading.Thread(target=_load, daemon=True).start()
