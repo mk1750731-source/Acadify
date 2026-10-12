@@ -392,7 +392,13 @@ def api_register_face():
         import cv2
         img_bgr = cv2.imread(tmp_path)
     else:
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True, force=True) or {}
+        if not data:
+            try:
+                import json as _json
+                data = _json.loads(request.data.decode('utf-8')) or {}
+            except Exception:
+                data = {}
         b64 = data.get('image_b64', '')
         if b64:
             img_bgr = decode_base64_image(b64)
@@ -448,15 +454,22 @@ def api_recognize():
     Accepts: JSON {image_b64: "data:image/...;base64,...", session_id: "optional"}
     """
     try:
-        data = request.get_json(silent=True) or {}
+        # Accept JSON body or form data
+        data = request.get_json(silent=True, force=True) or {}
+        if not data:
+            try:
+                import json
+                data = json.loads(request.data.decode('utf-8')) or {}
+            except Exception:
+                data = {}
         b64  = data.get('image_b64', '')
         session_id = data.get('session_id', 'default')
         subject = (data.get('subject') or '').strip()
 
         if not b64:
-            return jsonify({'success': False, 'error': 'No image data received.'}), 400
+            return jsonify({'success': False, 'error': 'No image data received.', 'debug': {'content_type': request.content_type, 'data_len': len(request.data), 'keys': list(data.keys())}}), 400
         if not subject:
-            return jsonify({'success': False, 'error': 'Select a subject before scanning.'}), 400
+            return jsonify({'success': False, 'error': 'Select a subject before scanning.', 'debug': {'keys': list(data.keys())}}), 400
 
         img_bgr = decode_base64_image(b64)
         if img_bgr is None:
