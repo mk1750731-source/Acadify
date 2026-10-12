@@ -31,6 +31,7 @@ venv/
 
 # Secrets
 .env
+.env.local
 backend/.env
 
 # ML model files (large binary — store separately)
