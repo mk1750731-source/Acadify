@@ -63,18 +63,7 @@ def patched_flash(message, category='message'):
     # but we could also intercept it if needed.
     return original_flash(message, category)
 
-class CustomRequest(flask.Request):
-    @property
-    def form(self):
-        if self.is_json:
-            from werkzeug.datastructures import ImmutableMultiDict
-            data = self.get_json()
-            if isinstance(data, dict):
-                return ImmutableMultiDict(data)
-        return super().form
-
 def apply_patches():
     flask.render_template = patched_render_template
     flask.redirect = patched_redirect
     flask.flash = patched_flash
-    flask.Flask.request_class = CustomRequest
