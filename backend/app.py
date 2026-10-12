@@ -9,6 +9,11 @@ from models.db import mongo
 from models.user import User
 import react_api
 
+import tensorflow as tf
+import keras
+
+print("[VERSION CHECK] TensorFlow:", tf.__version__)
+print("[VERSION CHECK] Keras:", keras.__version__)
 
 # Apply React API patches so API requests return JSON instead of HTML.
 react_api.apply_patches()
