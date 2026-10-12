@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Camera, CheckCircle, XCircle, AlertCircle, Users, RefreshCw, Plus, Calendar, ChevronRight } from 'lucide-react';
+import { Camera, CheckCircle, XCircle, AlertCircle, Users, RefreshCw, Plus, Calendar, ChevronRight, Loader } from 'lucide-react';
 import api from '../../services/api';
+import { loadModels, getEmbedding } from '../../services/faceApi';
 
 export default function FaceAttendance() {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const autoScanRef = useRef(null);
-  const scanningRef = useRef(false); // ref to avoid stale closure in setTimeout
+  const scanningRef = useRef(false);
 
   const [step, setStep] = useState(1);
 
   // Step 1
   const [subjects, setSubjects] = useState([]);
+  const [subjectsLoading, setSubjectsLoading] = useState(true);
   const [form, setForm] = useState({ subject: '', date: new Date().toISOString().slice(0, 10), label: '' });
   const [creating, setCreating] = useState(false);
   const [todaySessions, setTodaySessions] = useState([]);
@@ -22,47 +23,31 @@ export default function FaceAttendance() {
   const [session, setSession] = useState(null);
   const [classStudents, setClassStudents] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
-  const [modelReady, setModelReady] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [stream, setStream] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
   const [message, setMessage] = useState('');
 
-  const statusPollRef = useRef(null);
-
-  const pollModelStatus = () => {
-    api.get('/api/face/status', { noCache: true })
-      .then(r => {
-        if (r.data?.ready) {
-          setModelReady(true);
-          setInitError('');
-        } else {
-          setInitError('Models loading — will retry...');
-          statusPollRef.current = setTimeout(pollModelStatus, 4000);
-        }
-      })
-      .catch(err => {
-        if (err.response?.status === 503) {
-          setInitError('Models loading — will retry...');
-          statusPollRef.current = setTimeout(pollModelStatus, 4000);
-        } else {
-          setInitError('Could not reach face recognition service.');
-          setModelReady(true); // allow attempt anyway
-        }
-      });
-  };
-
   useEffect(() => {
+    // Load subjects
     api.get('/api/face/subjects', { noCache: true })
-      .then(r => setSubjects(r.data.subjects || []))
-      .catch(() => {});
+      .then(r => {
+        setSubjects(r.data.subjects || []);
+        setSubjectsLoading(false);
+      })
+      .catch(() => setSubjectsLoading(false));
 
-    pollModelStatus();
+    // Pre-load face models in background (don't block UI)
+    loadModels()
+      .then(() => setModelsLoaded(true))
+      .catch(() => {}); // will retry on first scan
+
     loadTodaySessions();
+
     return () => {
       streamRef.current?.getTracks().forEach(t => t.stop());
       clearTimeout(autoScanRef.current);
-      clearTimeout(statusPollRef.current);
     };
   }, []);
 
@@ -130,17 +115,6 @@ export default function FaceAttendance() {
     setStream(false);
   };
 
-  const captureFrame = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video?.videoWidth) return null;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d').drawImage(video, 0, 0);
-    return canvas.toDataURL('image/jpeg', 0.82);
-  };
-
-  // Use refs for values needed inside setTimeout to avoid stale closures
   const classStudentsRef = useRef(classStudents);
   const currentIdxRef = useRef(currentIdx);
   useEffect(() => { classStudentsRef.current = classStudents; }, [classStudents]);
@@ -158,22 +132,43 @@ export default function FaceAttendance() {
     }
   }, []);
 
+  const sessionRef = useRef(session);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+
   const doScan = useCallback(async (sessionArg) => {
     if (scanningRef.current) return;
-    const image = captureFrame();
-    if (!image) { setMessage('Camera not ready — wait a moment.'); return; }
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) {
+      setMessage('Camera not ready — wait a moment.');
+      return;
+    }
 
     scanningRef.current = true;
     setScanning(true);
     setScanResult(null);
-    setMessage('Scanning...');
 
     try {
-      // IMPORTANT: noCache must NOT be in the POST body — pass as 3rd arg (axios config)
-      const { data } = await api.post(
-        '/api/face/recognize',
-        { image_b64: image, subject: sessionArg.subject, session_id: sessionArg.session_id }
-      );
+      // Load models if not yet loaded (first scan)
+      if (!modelsLoaded) {
+        setMessage('Loading face models...');
+        await loadModels();
+        setModelsLoaded(true);
+      }
+
+      setMessage('Detecting face...');
+      const embedding = await getEmbedding(video);
+      if (!embedding) {
+        setScanResult({ recognized: false });
+        setMessage('No face detected — reposition and try again.');
+        return;
+      }
+
+      setMessage('Scanning...');
+      const { data } = await api.post('/api/face/recognize', {
+        embedding,
+        subject: sessionArg.subject,
+        session_id: sessionArg.session_id,
+      });
 
       if (data.success && data.recognized) {
         const result = {
@@ -188,12 +183,10 @@ export default function FaceAttendance() {
           ? `${data.student_name} — already marked today`
           : `✓ ${data.student_name} marked present`
         );
-
         setClassStudents(prev => {
           const updated = prev.map(s =>
             s.roll_no === data.roll_no ? { ...s, today_status: 'present', already_marked: true } : s
           );
-          // Schedule advance using updated list via ref
           autoScanRef.current = setTimeout(() => {
             advanceToNext(updated, currentIdxRef.current);
           }, 1500);
@@ -205,22 +198,17 @@ export default function FaceAttendance() {
       }
     } catch (err) {
       setScanResult({ recognized: false });
-      const errMsg = err.response?.data?.error || err.response?.data?.message || 'Scan failed.';
-      setMessage(errMsg);
+      setMessage(err.response?.data?.error || err.response?.data?.message || 'Scan failed.');
     } finally {
       scanningRef.current = false;
       setScanning(false);
     }
-  }, [advanceToNext]);
-
-  // Expose handleScan for button — reads session from state via closure is fine here
-  const sessionRef = useRef(session);
-  useEffect(() => { sessionRef.current = session; }, [session]);
+  }, [modelsLoaded, advanceToNext]);
 
   const handleScan = useCallback(() => {
-    if (!sessionRef.current || !stream || !modelReady) return;
+    if (!sessionRef.current || !stream) return;
     doScan(sessionRef.current);
-  }, [stream, modelReady, doScan]);
+  }, [stream, doScan]);
 
   const markedCount = classStudents.filter(s => s.already_marked || s.today_status === 'present').length;
   const allDone = classStudents.length > 0 && markedCount === classStudents.length;
@@ -263,14 +251,24 @@ export default function FaceAttendance() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="text-xs text-secondary block mb-1">Subject *</label>
-              <select
-                value={form.subject}
-                onChange={e => setForm(f => ({ ...f, subject: e.target.value }))}
-                className="glass-input w-full"
-              >
-                <option value="">-- Select Subject --</option>
-                {subjects.map(s => <option key={s.subject} value={s.subject}>{s.subject}</option>)}
-              </select>
+              {subjectsLoading ? (
+                <div className="glass-input w-full flex items-center gap-2 text-secondary text-sm">
+                  <Loader className="w-3 h-3 animate-spin" /> Loading subjects...
+                </div>
+              ) : subjects.length === 0 ? (
+                <div className="glass-input w-full text-amber-400 text-sm">
+                  No subjects found. Ensure students are enrolled.
+                </div>
+              ) : (
+                <select
+                  value={form.subject}
+                  onChange={e => setForm(f => ({ ...f, subject: e.target.value }))}
+                  className="glass-input w-full"
+                >
+                  <option value="">-- Select Subject --</option>
+                  {subjects.map(s => <option key={s.subject} value={s.subject}>{s.subject}</option>)}
+                </select>
+              )}
             </div>
             <div>
               <label className="text-xs text-secondary block mb-1">Date *</label>
@@ -293,9 +291,14 @@ export default function FaceAttendance() {
             </div>
           </div>
           {initError && <p className="text-sm text-amber-500">{initError}</p>}
+          {!modelsLoaded && (
+            <p className="text-xs text-secondary flex items-center gap-1">
+              <Loader className="w-3 h-3 animate-spin" /> Loading face recognition models in background...
+            </p>
+          )}
           <button
             onClick={handleCreateSession}
-            disabled={!form.subject || creating}
+            disabled={!form.subject || creating || subjectsLoading}
             className="glass-button bg-white text-black hover:bg-white/90 px-6 py-2.5 disabled:opacity-40"
           >
             {creating ? 'Creating...' : 'Create Session & Start Scanning'}
@@ -357,7 +360,6 @@ export default function FaceAttendance() {
 
           <div className="glass-card overflow-hidden relative aspect-video bg-black/50 flex items-center justify-center">
             <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-            <canvas ref={canvasRef} className="hidden" />
             {stream && (
               <div className={`absolute inset-0 border-2 pointer-events-none transition-colors duration-300 ${
                 scanning ? 'border-cyan-500 animate-pulse shadow-[0_0_20px_rgba(6,182,212,0.5)]' :
@@ -393,9 +395,10 @@ export default function FaceAttendance() {
               scanResult ? 'border-green-500/30 bg-green-500/5' : ''
             }`}>
               <div className="flex items-center gap-2">
-                {scanResult?.recognized === false && <XCircle className="w-5 h-5 text-red-400 shrink-0" />}
-                {scanResult?.already_marked && <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />}
-                {scanResult && scanResult.recognized !== false && !scanResult.already_marked && <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />}
+                {scanning && <Loader className="w-5 h-5 text-cyan-400 animate-spin shrink-0" />}
+                {!scanning && scanResult?.recognized === false && <XCircle className="w-5 h-5 text-red-400 shrink-0" />}
+                {!scanning && scanResult?.already_marked && <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />}
+                {!scanning && scanResult && scanResult.recognized !== false && !scanResult.already_marked && <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />}
                 <span className="text-sm font-medium">{message}</span>
               </div>
               {scanResult?.name && (

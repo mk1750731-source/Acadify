@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Camera, CheckCircle, XCircle } from 'lucide-react';
 import api from '../../services/api';
+import { loadModels, getEmbedding } from '../../services/faceApi';
 
 export default function FaceRegister() {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const [status, setStatus] = useState('initializing');
   const [message, setMessage] = useState('Preparing AI face models...');
@@ -15,24 +15,15 @@ export default function FaceRegister() {
   const [students, setStudents] = useState([]);
   const [selectedStudent, setSelectedStudent] = useState('');
 
-  const statusPollRef = useRef(null);
-
   const pollModelStatus = () => {
-    api.get('/api/face/status', { noCache: true })
+    loadModels()
       .then(() => {
         setModelReady(true);
         setStatus(s => s === 'initializing' ? 'ready' : s);
-        setMessage(m => m === 'Preparing AI face models...' ? 'Position your face in the frame and click capture.' : m);
+        setMessage('Position your face in the frame and click capture.');
       })
-      .catch(err => {
-        if (err.response?.status === 503) {
-          setMessage('Models loading — please wait...');
-          statusPollRef.current = setTimeout(pollModelStatus, 4000);
-        } else {
-          setModelReady(true);
-          setStatus(s => s === 'initializing' ? 'ready' : s);
-          setMessage('Ready — position your face and click capture.');
-        }
+      .catch(() => {
+        setMessage('Failed to load face models.');
       });
   };
 
@@ -59,7 +50,6 @@ export default function FaceRegister() {
     startCamera();
     return () => {
       streamRef.current?.getTracks().forEach((track) => track.stop());
-      clearTimeout(statusPollRef.current);
     };
   }, []);
 
@@ -91,27 +81,29 @@ export default function FaceRegister() {
   };
 
   const handleCapture = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    if (!videoRef.current.videoWidth || !videoRef.current.videoHeight) {
+    if (!videoRef.current) return;
+    if (!videoRef.current.videoWidth || videoRef.current.readyState < 2) {
       setStatus('error');
       setMessage('Camera is still starting. Please try again.');
       return;
     }
 
     setStatus('scanning');
-    setMessage('Processing face embedding...');
+    setMessage('Detecting face...');
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const base64Image = canvas.toDataURL('image/jpeg', 0.82);
+    const embedding = await getEmbedding(videoRef.current);
+    if (!embedding) {
+      setStatus('error');
+      setMessage('No face detected. Position your face clearly and try again.');
+      setTimeout(() => setStatus('ready'), 3000);
+      return;
+    }
+
+    setMessage('Processing face embedding...');
 
     try {
       const response = await api.post('/api/face/register', {
-        image_b64: base64Image,
+        embedding,
         ...(role === 'admin' ? { student_id: selectedStudent } : {})
       });
 
@@ -159,7 +151,6 @@ export default function FaceRegister() {
               muted 
               className="w-full h-full object-cover"
             />
-            <canvas ref={canvasRef} className="hidden" />
             
             {stream && (
               <div className="absolute inset-0 border-2 border-white/20 pointer-events-none flex items-center justify-center">
