@@ -222,7 +222,7 @@ def seed():
                 )
 
             risk_icon = "[HIGH]" if pred['risk_level'] == 'HIGH' else ("[MED] " if pred['risk_level'] == 'MEDIUM' else "[LOW] ")
-            print(f"    {risk_icon} {name:<25} GPA:{gpa}  Att:{att}%  → {pred['risk_level']}")
+            print(f"    {risk_icon} {name:<25} GPA:{gpa}  Att:{att}%  -> {pred['risk_level']}")
             success += 1
 
         DepartmentModel.recalculate_stats()
