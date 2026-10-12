@@ -24,7 +24,7 @@ export default function AppLayout() {
       try { setRole(JSON.parse(cached).role || 'student'); } catch {}
       return;
     }
-    api.get('/api/session')
+    api.get('/api/session', { noCache: true })
       .then(({ data }) => {
         if (data.user) {
           setRole(data.user.role || 'student');

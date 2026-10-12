@@ -7,10 +7,17 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+
+# Secrets — never commit real .env files
 .env
 .env.*
 !.env.example
+
+# Git internals
 .git/
+
+# Frontend build output
+frontend/dist/
 
 # Duplicate/generated model artifacts — keep only backend/
 frontend/ai_model/
@@ -23,3 +30,7 @@ backend/face_attendance_models/best_facenet_model_fixed.keras
 # Training data (not needed at runtime)
 backend/ai_model/student_dataset.csv
 backend/ai_model/student_risk_prediction_model_artifacts.zip
+
+# OS files
+.DS_Store
+Thumbs.db

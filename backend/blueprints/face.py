@@ -84,7 +84,6 @@ def _mark_face_attendance(student_id, student_name, roll_no, session_id=None):
 
 @face_bp.route('/api/face/status')
 @login_required
-@role_required('admin', 'teacher', 'student')
 def api_face_status():
     from ai_service import face_recognizer as fr, emotion_predictor as ep
     face_ready = fr.ready
@@ -365,11 +364,11 @@ def api_register_face():
     from models.student import StudentModel
 
     # Resolve student
+    student = None
     if current_user.role == 'student':
         student = StudentModel.get_by_user_id(current_user.id)
-    elif current_user.role == 'admin':
-        # Admin registering on behalf
-        student_id = request.form.get('student_id') or (request.get_json() or {}).get('student_id')
+    elif current_user.role in ('admin', 'teacher'):
+        student_id = request.form.get('student_id') or (request.get_json(silent=True) or {}).get('student_id')
         student = StudentModel.get_by_id(student_id) if student_id else None
 
     if not student:
@@ -377,8 +376,8 @@ def api_register_face():
 
     if not face_recognizer.ready:
         return jsonify({'success': False,
-                        'error': 'Face recognition library not installed. '
-                                 'Run: pip install face-recognition'}), 503
+                        'error': 'Face recognition models not loaded. '
+                                 'Check server logs for details.'}), 503
 
     # ── Get image ─────────────────────────────────────────────────────────────
     img_bgr = None
@@ -628,6 +627,20 @@ def api_expression():
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+# ── API: Current student face info ───────────────────────────────────────────
+
+@face_bp.route('/api/face/students/me')
+@login_required
+@role_required('student')
+def api_face_students_me():
+    db = get_db()
+    from models.student import StudentModel
+    student = StudentModel.get_by_user_id(current_user.id)
+    if not student:
+        return jsonify({'success': False, 'embedding_count': 0})
+    return jsonify({'success': True, 'embedding_count': len(student.get('face_embeddings', []))})
 
 
 # ── API: Students list ────────────────────────────────────────────────────────

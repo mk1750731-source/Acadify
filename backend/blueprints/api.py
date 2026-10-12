@@ -10,16 +10,6 @@ from ml.predictor import predict_student_risk, get_model_info
 
 api_bp = Blueprint('api', __name__, url_prefix='/api')
 
-@api_bp.route('/session')
-@login_required
-def session():
-    return jsonify({'user': {
-        'id': str(current_user._id),
-        'name': current_user.name,
-        'email': current_user.email,
-        'role': current_user.role,
-    }})
-
 @api_bp.route('/dashboard-stats')
 def dashboard_stats():
     db = get_db()

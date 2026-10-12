@@ -18,17 +18,16 @@ export default function FaceRegister() {
   useEffect(() => {
     const fetchInfo = async () => {
       try {
-        const [{ data: session }, { data: page }] = await Promise.all([
-          api.get('/api/session'),
-          api.get('/face/register')
-        ]);
-        setRole(session.user?.role || 'student');
-        if (session.user?.role === 'admin') {
-          const { data } = await api.get('/api/face/students');
+        const { data: session } = await api.get('/api/session', { noCache: true });
+        const userRole = session.user?.role || 'student';
+        setRole(userRole);
+        if (userRole === 'admin') {
+          const { data } = await api.get('/api/face/students', { noCache: true });
           setStudents(data.students || []);
           setSelectedStudent(data.students?.[0]?.student_id || '');
         } else {
-          setFaceCount(page.face_count || 0);
+          const { data } = await api.get('/api/face/students/me', { noCache: true });
+          setFaceCount(data.embedding_count || 0);
         }
       } catch (e) {
         console.error(e);

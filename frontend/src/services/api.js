@@ -8,7 +8,7 @@ const api = axios.create({
 
 // In-memory cache: { url: { data, ts } }
 const cache = {};
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000;
 
 const originalGet = api.get.bind(api);
 
@@ -17,12 +17,8 @@ api.get = (url, config = {}) => {
   const now = Date.now();
   const hit = cache[url];
 
-  // Stale-while-revalidate: return cached instantly, refresh in background
   if (!noCache && hit) {
-    if (now - hit.ts < CACHE_TTL) {
-      return Promise.resolve(hit.data);
-    }
-    // Stale: return immediately, update cache in background
+    if (now - hit.ts < CACHE_TTL) return Promise.resolve(hit.data);
     originalGet(url, restConfig).then(res => { cache[url] = { data: res, ts: Date.now() }; onCached?.(res); });
     return Promise.resolve(hit.data);
   }
@@ -33,7 +29,6 @@ api.get = (url, config = {}) => {
   });
 };
 
-// Call this after POST/PUT to invalidate related cache
 api.clearCache = (urlPrefix) => {
   Object.keys(cache).forEach(k => {
     if (!urlPrefix || k.startsWith(urlPrefix)) delete cache[k];
@@ -49,6 +44,8 @@ api.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401 && !window.location.pathname.includes('/login')) {
+      api.clearCache(); // clear stale cache on auth failure
+      localStorage.removeItem('edu_user');
       window.location.href = '/login';
     }
     return Promise.reject(error);

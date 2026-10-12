@@ -7,17 +7,19 @@ export default function FaceAttendance() {
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const autoScanRef = useRef(null);
+  const scanningRef = useRef(false); // ref to avoid stale closure in setTimeout
 
-  const [step, setStep] = useState(1); // 1 = create session, 2 = scan
+  const [step, setStep] = useState(1);
 
-  // Step 1 state
+  // Step 1
   const [subjects, setSubjects] = useState([]);
   const [form, setForm] = useState({ subject: '', date: new Date().toISOString().slice(0, 10), label: '' });
   const [creating, setCreating] = useState(false);
   const [todaySessions, setTodaySessions] = useState([]);
+  const [initError, setInitError] = useState('');
 
-  // Step 2 state
-  const [session, setSession] = useState(null); // { session_id, subject, date, day, label }
+  // Step 2
+  const [session, setSession] = useState(null);
   const [classStudents, setClassStudents] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [modelReady, setModelReady] = useState(false);
@@ -30,9 +32,23 @@ export default function FaceAttendance() {
     api.get('/api/face/subjects', { noCache: true })
       .then(r => setSubjects(r.data.subjects || []))
       .catch(() => {});
-    api.get('/api/face/status')
-      .then(() => setModelReady(true))
-      .catch(() => setMessage('Face recognition models unavailable.'));
+
+    // Check model status — don't block UI if this fails
+    api.get('/api/face/status', { noCache: true })
+      .then(r => {
+        if (r.data?.ready) setModelReady(true);
+        else setInitError(r.data?.message || 'Face models not ready yet.');
+      })
+      .catch(err => {
+        // 503 means models still loading — still allow manual scan attempt
+        if (err.response?.status === 503) {
+          setInitError('Models still loading — try scanning in a moment.');
+          setModelReady(true); // allow attempt; backend will reject if truly not ready
+        } else {
+          setInitError('Could not reach face recognition service.');
+        }
+      });
+
     loadTodaySessions();
     return () => {
       streamRef.current?.getTracks().forEach(t => t.stop());
@@ -49,14 +65,17 @@ export default function FaceAttendance() {
   const handleCreateSession = async () => {
     if (!form.subject) return;
     setCreating(true);
+    setInitError('');
     try {
       const { data } = await api.post('/api/face/session/create', form);
       if (data.success) {
-        enterSession(data);
+        await enterSession(data);
         loadTodaySessions();
+      } else {
+        setInitError(data.message || 'Failed to create session.');
       }
     } catch (e) {
-      setMessage(e.response?.data?.message || 'Failed to create session.');
+      setInitError(e.response?.data?.message || 'Failed to create session.');
     } finally {
       setCreating(false);
     }
@@ -67,15 +86,18 @@ export default function FaceAttendance() {
     setStep(2);
     setScanResult(null);
     setMessage('');
-    // Load students for this session
-    const { data } = await api.get(
-      `/api/face/class-students?subject=${encodeURIComponent(sess.subject)}&session_id=${sess.session_id}`,
-      { noCache: true }
-    );
-    const students = data.students || [];
-    setClassStudents(students);
-    const firstPending = students.findIndex(s => !s.already_marked);
-    setCurrentIdx(firstPending === -1 ? 0 : firstPending);
+    try {
+      const { data } = await api.get(
+        `/api/face/class-students?subject=${encodeURIComponent(sess.subject)}&session_id=${sess.session_id}`,
+        { noCache: true }
+      );
+      const students = data.students || [];
+      setClassStudents(students);
+      const firstPending = students.findIndex(s => !s.already_marked);
+      setCurrentIdx(firstPending === -1 ? 0 : firstPending);
+    } catch {
+      setMessage('Failed to load student list.');
+    }
     await startCamera();
   };
 
@@ -88,7 +110,7 @@ export default function FaceAttendance() {
       if (videoRef.current) videoRef.current.srcObject = ms;
       setStream(true);
     } catch {
-      setMessage('Camera access denied.');
+      setMessage('Camera access denied. Please allow camera permissions.');
     }
   };
 
@@ -108,6 +130,12 @@ export default function FaceAttendance() {
     return canvas.toDataURL('image/jpeg', 0.82);
   };
 
+  // Use refs for values needed inside setTimeout to avoid stale closures
+  const classStudentsRef = useRef(classStudents);
+  const currentIdxRef = useRef(currentIdx);
+  useEffect(() => { classStudentsRef.current = classStudents; }, [classStudents]);
+  useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
+
   const advanceToNext = useCallback((students, afterIdx) => {
     const next = students.findIndex((s, i) => i > afterIdx && !s.already_marked);
     if (next !== -1) {
@@ -120,21 +148,22 @@ export default function FaceAttendance() {
     }
   }, []);
 
-  const handleScan = useCallback(async () => {
-    if (!session || !stream || !modelReady || scanning) return;
+  const doScan = useCallback(async (sessionArg) => {
+    if (scanningRef.current) return;
     const image = captureFrame();
-    if (!image) { setMessage('Camera not ready.'); return; }
+    if (!image) { setMessage('Camera not ready — wait a moment.'); return; }
 
+    scanningRef.current = true;
     setScanning(true);
     setScanResult(null);
     setMessage('Scanning...');
 
     try {
-      const { data } = await api.post('/api/face/recognize', {
-        image_b64: image,
-        subject: session.subject,
-        session_id: session.session_id,
-      }, { noCache: true });
+      // IMPORTANT: noCache must NOT be in the POST body — pass as 3rd arg (axios config)
+      const { data } = await api.post(
+        '/api/face/recognize',
+        { image_b64: image, subject: sessionArg.subject, session_id: sessionArg.session_id }
+      );
 
       if (data.success && data.recognized) {
         const result = {
@@ -145,34 +174,43 @@ export default function FaceAttendance() {
           expression_confidence: data.expression_confidence,
         };
         setScanResult(result);
-        setMessage(data.already_marked ? `${data.student_name} — already marked` : `✓ ${data.student_name} marked present`);
-
-        const updatedStudents = classStudents.map(s =>
-          s.roll_no === data.roll_no ? { ...s, today_status: 'present', already_marked: true } : s
+        setMessage(data.already_marked
+          ? `${data.student_name} — already marked today`
+          : `✓ ${data.student_name} marked present`
         );
-        setClassStudents(updatedStudents);
 
-        // Auto-advance after 1.5s
-        autoScanRef.current = setTimeout(() => {
-          advanceToNext(updatedStudents, currentIdx);
-        }, 1500);
+        setClassStudents(prev => {
+          const updated = prev.map(s =>
+            s.roll_no === data.roll_no ? { ...s, today_status: 'present', already_marked: true } : s
+          );
+          // Schedule advance using updated list via ref
+          autoScanRef.current = setTimeout(() => {
+            advanceToNext(updated, currentIdxRef.current);
+          }, 1500);
+          return updated;
+        });
       } else {
         setScanResult({ recognized: false });
-        setMessage(data.message || 'Face not recognized. Please reposition.');
-        // Auto retry after 2s
-        autoScanRef.current = setTimeout(() => {
-          setScanning(false);
-          handleScan();
-        }, 2000);
-        return;
+        setMessage(data.message || data.error || 'Face not recognized — reposition and try again.');
       }
     } catch (err) {
       setScanResult({ recognized: false });
-      setMessage(err.response?.data?.message || 'Scan failed.');
+      const errMsg = err.response?.data?.error || err.response?.data?.message || 'Scan failed.';
+      setMessage(errMsg);
     } finally {
+      scanningRef.current = false;
       setScanning(false);
     }
-  }, [session, stream, modelReady, scanning, classStudents, currentIdx, advanceToNext]);
+  }, [advanceToNext]);
+
+  // Expose handleScan for button — reads session from state via closure is fine here
+  const sessionRef = useRef(session);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+
+  const handleScan = useCallback(() => {
+    if (!sessionRef.current || !stream || !modelReady) return;
+    doScan(sessionRef.current);
+  }, [stream, modelReady, doScan]);
 
   const markedCount = classStudents.filter(s => s.already_marked || s.today_status === 'present').length;
   const allDone = classStudents.length > 0 && markedCount === classStudents.length;
@@ -180,12 +218,25 @@ export default function FaceAttendance() {
   const exitSession = () => {
     stopCamera();
     clearTimeout(autoScanRef.current);
+    scanningRef.current = false;
     setStep(1);
     setSession(null);
     setClassStudents([]);
     setScanResult(null);
     setMessage('');
+    setScanning(false);
     loadTodaySessions();
+  };
+
+  const refreshStudents = async () => {
+    if (!session) return;
+    try {
+      const { data } = await api.get(
+        `/api/face/class-students?subject=${encodeURIComponent(session.subject)}&session_id=${session.session_id}`,
+        { noCache: true }
+      );
+      setClassStudents(data.students || []);
+    } catch {}
   };
 
   // ── Step 1: Session Setup ──────────────────────────────────────────────────
@@ -197,7 +248,6 @@ export default function FaceAttendance() {
           <p className="text-secondary text-sm">Create a session for a subject, then scan student faces.</p>
         </div>
 
-        {/* Create Session Form */}
         <div className="glass-card p-6 space-y-4">
           <h2 className="font-semibold flex items-center gap-2"><Plus className="w-4 h-4 text-cyan-400" /> New Session</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -232,7 +282,7 @@ export default function FaceAttendance() {
               />
             </div>
           </div>
-          {message && <p className="text-sm text-red-400">{message}</p>}
+          {initError && <p className="text-sm text-amber-500">{initError}</p>}
           <button
             onClick={handleCreateSession}
             disabled={!form.subject || creating}
@@ -242,7 +292,6 @@ export default function FaceAttendance() {
           </button>
         </div>
 
-        {/* Today's Sessions */}
         {todaySessions.length > 0 && (
           <div className="glass-card p-6 space-y-3">
             <h2 className="font-semibold flex items-center gap-2"><Calendar className="w-4 h-4 text-purple-400" /> Today's Sessions</h2>
@@ -252,10 +301,7 @@ export default function FaceAttendance() {
                   <p className="font-medium">{sess.subject} {sess.label && <span className="text-secondary text-sm">· {sess.label}</span>}</p>
                   <p className="text-xs text-secondary">{sess.day}, {sess.date} · {sess.student_count} students · by {sess.created_by_name}</p>
                 </div>
-                <button
-                  onClick={() => enterSession(sess)}
-                  className="glass-button px-4 py-2 text-sm flex items-center gap-1"
-                >
+                <button onClick={() => enterSession(sess)} className="glass-button px-4 py-2 text-sm flex items-center gap-1">
                   Resume <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
@@ -271,7 +317,6 @@ export default function FaceAttendance() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-4">
-      {/* Session Header */}
       <div className="glass-card p-4 border-l-4 border-l-cyan-500 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold">{session.subject} {session.label && `· ${session.label}`}</h1>
@@ -289,14 +334,13 @@ export default function FaceAttendance() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Camera Panel */}
         <div className="space-y-4">
-          {/* Current Student Indicator */}
           {currentStudent && !allDone && (
             <div className="glass-card p-4 border border-cyan-500/30 bg-cyan-500/5">
               <p className="text-xs text-secondary mb-1">Now scanning</p>
               <p className="font-semibold text-lg">{currentStudent.name}</p>
               <p className="text-sm text-secondary">{currentStudent.roll_no} · {currentStudent.department}</p>
               {!currentStudent.face_registered && (
-                <p className="text-xs text-red-400 mt-1">⚠ No face registered</p>
+                <p className="text-xs text-red-400 mt-1">⚠ No face registered — cannot scan this student</p>
               )}
             </div>
           )}
@@ -320,22 +364,18 @@ export default function FaceAttendance() {
           </div>
 
           <div className="flex gap-3">
-            <button
-              onClick={stream ? stopCamera : startCamera}
-              className="glass-button flex-1 py-3"
-            >
+            <button onClick={stream ? stopCamera : startCamera} className="glass-button flex-1 py-3">
               {stream ? 'Stop Camera' : 'Start Camera'}
             </button>
             <button
               onClick={handleScan}
-              disabled={!modelReady || scanning || !stream || allDone}
+              disabled={scanning || !stream || allDone}
               className="glass-button flex-1 bg-white py-3 text-black hover:bg-white/90 disabled:opacity-40"
             >
               {scanning ? 'Scanning...' : allDone ? 'All Done ✓' : 'Scan Face'}
             </button>
           </div>
 
-          {/* Scan Result */}
           {(message || scanResult) && (
             <div className={`glass-card p-4 space-y-2 ${
               scanResult?.recognized === false ? 'border-red-500/30 bg-red-500/5' :
@@ -367,13 +407,14 @@ export default function FaceAttendance() {
           <div className="flex items-center gap-2 shrink-0">
             <Users className="w-5 h-5 text-cyan-400" />
             <h2 className="font-semibold">{session.subject} — Students</h2>
-            <button onClick={async () => {
-              const { data } = await api.get(`/api/face/class-students?subject=${encodeURIComponent(session.subject)}&session_id=${session.session_id}`, { noCache: true });
-              setClassStudents(data.students || []);
-            }} className="ml-auto text-secondary hover:text-white">
+            <button onClick={refreshStudents} className="ml-auto text-secondary hover:text-white" title="Refresh">
               <RefreshCw className="w-4 h-4" />
             </button>
           </div>
+
+          {classStudents.length === 0 && (
+            <p className="text-sm text-secondary text-center py-4">No students enrolled in this subject.</p>
+          )}
 
           <div className="overflow-y-auto flex-1 space-y-2 pr-1">
             {classStudents.map((student, idx) => {

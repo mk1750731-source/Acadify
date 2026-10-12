@@ -1,4 +1,3 @@
-
 import os
 from flask import Flask, request
 from flask_cors import CORS
@@ -15,65 +14,38 @@ import keras
 print("[VERSION CHECK] TensorFlow:", tf.__version__)
 print("[VERSION CHECK] Keras:", keras.__version__)
 
-# Apply React API patches so API requests return JSON instead of HTML.
 react_api.apply_patches()
 
 
 def create_app():
     app = Flask(__name__)
+    app.config.from_object(Config)
 
-    # Frontend origins allowed to communicate with the backend.
-    allowed_origins = {
+    # Build allowed origins list — include any FRONTEND_URL set in Railway vars
+    allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://acadify-nu-dusky.vercel.app",
         "https://acadify-frontend-production.up.railway.app",
-    }
-
-    # Optionally allow a frontend URL configured in Railway variables.
+    ]
     frontend_url = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
-    if frontend_url:
-        allowed_origins.add(frontend_url)
+    if frontend_url and frontend_url not in allowed_origins:
+        allowed_origins.append(frontend_url)
 
-    # Load application configuration before initializing extensions.
-    app.config.from_object(Config)
-
-    
-    # Configure CORS for local development and deployed frontends.
     CORS(
         app,
-        resources={
-            r"/*": {
-                "origins": [
-                    "https://acadify-frontend-production.up.railway.app",
-                    "https://acadify-nu-dusky.vercel.app",
-                    "http://localhost:3000",
-                    "http://127.0.0.1:3000",
-                    "http://localhost:5173",
-                    "http://127.0.0.1:5173",
-                ]
-            }
-        },
+        resources={r"/*": {"origins": allowed_origins}},
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        vary_header=True,
     )
 
-
-    # Explicitly handle OPTIONS requests.
-    # Flask-CORS adds the appropriate headers after the response is created.
-    @app.before_request
-    def handle_preflight():
-        if request.method == "OPTIONS":
-            return app.response_class("", status=204)
-
-    # Initialize MongoDB.
+    # Initialize MongoDB
     mongo.init_app(app)
 
-    # Initialize Flask-Login.
+    # Initialize Flask-Login
     login_manager = LoginManager()
     login_manager.login_view = "auth.login"
     login_manager.login_message_category = "warning"
@@ -83,7 +55,7 @@ def create_app():
     def load_user(user_id):
         return User.get_by_id(user_id)
 
-    # Register application blueprints.
+    # Register blueprints
     from blueprints.main import main_bp
     from blueprints.auth import auth_bp
     from blueprints.student import student_bp
@@ -102,7 +74,7 @@ def create_app():
     app.register_blueprint(teacher_bp)
     app.register_blueprint(parent_bp)
 
-    # Warm up AI models without preventing startup if a model fails.
+    # Warm up AI models in background without blocking startup
     try:
         from ai_service import warmup_models
         warmup_models()
@@ -116,8 +88,5 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(
-        host="127.0.0.1",
-        port=5000,
-        debug=True,
-    )
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=app.config.get("DEBUG", False))
